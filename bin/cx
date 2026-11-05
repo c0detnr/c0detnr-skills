@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# cx — Opus'un işleri Codex modellerine devretmesi için ince sarmalayıcı.
+# Ham loglar diske yazılır; ekrana (Opus'a) yalnızca kısa bir özet basılır.
+set -uo pipefail
+
+KIT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+SCHEMA="$KIT_DIR/share/sonuc.schema.json"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cx"
+USAGE="$STATE/usage.csv"
+MAX_OUT="${CX_MAX_OUT:-1500}"   # Opus'a dönen en fazla karakter
+TIMEOUT="${CX_TIMEOUT:-1800}"
+
+usage() {
+  cat <<'E'
+kullanım: cx <mod> ["talimat"]   (talimat argüman ya da stdin)
+  kod     yeni özellik / refactor         gpt-6.1-sol  medium
+  test    test yaz, geçene kadar düzelt   gpt-6.1-sol  medium
+  hata    hata ayıkla ve düzelt           gpt-6.1-sol  high
+  zor     zor sorun / ikinci görüş        gpt-6-astra  high
+  basit   lint, rename, docs, çeviri      gpt-6-luna   low
+  ozet    stdin'deki logu özetle          gemini-3.8-flash-low (yedek: luna)  ör: npm test 2>&1 | cx ozet
+  tara    "soru" kod tabanını okuyup cevapla  gemini-3.8-flash-medium  salt okuma
+  gor     <resim> ["soru"] görsel analizi     gemini-3.8-flash-medium  salt okuma
+  ikinci  değişikliklere ikinci inceleme      claude-sonnet-4-6 (agy)  salt okuma
+  resim   "prompt" <hedef.png>            gpt-6.1-sol  low
+  incele  commit edilmemiş değişiklikleri incele  gpt-6.1-sol medium
+  commit  staged diff'ten mesaj yaz ve commit at gpt-6-luna low
+  pr      [base] PR açıklaması yaz            gpt-6-luna low
+  devam   <id> "ek talimat"  önceki kod/test/hata oturumunu sürdür
+  durum   token kullanım özeti
+Ortam: CX_MODEL, CX_EFFORT (codex), CX_AGY_MODEL (agy) ile ezilebilir.
+Codex başarısız olursa kod/test/hata/zor/basit Gemini ile bir kez yeniden denenir (CX_YEDEK=0 kapatır).
+E
+}
+
+die() { echo "cx: $*" >&2; exit 2; }
+clip() { python3 -I -c 'import sys;s=sys.stdin.read();n=int(sys.argv[1]);print(s if len(s)<=n else s[:n]+"\n…(kırpıldı)")' "$1"; }
+in_git() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
+
+MODE="${1:-}"; [ -z "$MODE" ] && { usage; exit 2; }; shift || true
+
+RUN="$STATE/runs/$(date +%Y%m%d-%H%M%S)-$MODE-$$"
+mkdir -p "$RUN"; trap 'rmdir "$RUN" 2>/dev/null' EXIT   # boş kalırsa sil
+[ -f "$USAGE" ] || echo "zaman,mod,model,effort,girdi,onbellek,cikti,sure_sn,rc,dizin" > "$USAGE"
+
+PRE_ORTAK='Sen bir alt ajansın; seni başka bir ajan yönetiyor. Görevi sonuna kadar kendin bitir. Soru sormak yerine makul varsayım yap ve varsayımları "sorular" alanına yaz. Git commit/push yapma. Bitince yalnızca şemaya uygun JSON dön; "ozet" en fazla 5 kısa satır olsun.'
+
+# --- codex çağrısı: run_codex <model> <effort> <sandbox> <ephemeral:0/1> [ek argümanlar...] ; prompt $RUN/prompt.md
+run_codex() {
+  local model="${CX_MODEL:-$1}" effort="${CX_EFFORT:-$2}" sandbox="$3" eph="$4"; shift 4
+  local args=(exec -m "$model" -c "model_reasoning_effort=\"$effort\"" -s "$sandbox"
+              --skip-git-repo-check --json -o "$RUN/last.txt")
+  [ "$sandbox" = workspace-write ] && args+=(-c 'sandbox_workspace_write.network_access=true')
+  [ "$eph" = 1 ] && args+=(--ephemeral)
+  args+=("$@" -)
+  local t0=$SECONDS
+  timeout "$TIMEOUT" codex "${args[@]}" < "$RUN/prompt.md" > "$RUN/events.jsonl" 2> "$RUN/stderr.txt"
+  RC=$?; DUR=$((SECONDS - t0)); MODEL_USED="$model"; EFFORT_USED="$effort"
+  log_usage
+}
+
+log_usage() {
+  python3 -I - "$RUN/events.jsonl" "$USAGE" "$MODE" "$MODEL_USED" "$EFFORT_USED" "$DUR" "$RC" "$RUN" <<'P'
+import json,sys,time
+ev,out,mode,model,eff,dur,rc,run=sys.argv[1:]
+i=c=o=0; tid=""
+try:
+    for line in open(ev,encoding="utf-8",errors="replace"):
+        try: e=json.loads(line)
+        except Exception: continue
+        if e.get("type")=="thread.started": tid=e.get("thread_id","")
+        u=e.get("usage") if isinstance(e.get("usage"),dict) else None
+        if u:
+            i+=u.get("input_tokens",0); c+=u.get("cached_input_tokens",0); o+=u.get("output_tokens",0)
+except FileNotFoundError: pass
+open(out,"a").write(f"{time.strftime('%F %T')},{mode},{model},{eff},{i},{c},{o},{dur},{rc},{run}\n")
+open(run+"/thread_id","w").write(tid)
+P
+  THREAD="$(cat "$RUN/thread_id" 2>/dev/null)"
+}
+
+# --- agy (Antigravity) çağrısı: run_agy <model> <plan|auto> ; prompt $RUN/prompt.md
+# plan = salt okuma (dosya yazamaz), auto = yazabilir. Sonuç metni $RUN/last.txt'ye yazılır.
+run_agy() {
+  local model="${CX_AGY_MODEL:-$1}" mode="$2" t0=$SECONDS
+  echo "Ara adımları, düşüncelerini ve ne yapacağını anlatma; yalnızca istenen son cevabı yaz." >> "$RUN/prompt.md"
+  timeout "$TIMEOUT" agy -p "$(cat "$RUN/prompt.md")" --model "$model" --mode "$mode" --sandbox \
+    --dangerously-skip-permissions --output-format json --print-timeout "${TIMEOUT}s" \
+    > "$RUN/agy.json" 2> "$RUN/stderr.txt"
+  RC=$?; DUR=$((SECONDS - t0)); MODEL_USED="$model"; EFFORT_USED="$mode"
+  python3 -I - "$RUN" "$USAGE" "$MODE" "$model" "$mode" "$DUR" "$RC" "$PWD" <<'P'
+import json,re,sys,time
+run,out,mode,model,eff,dur,rc,cwd=sys.argv[1:]
+try: d=json.load(open(run+"/agy.json"))
+except Exception: d={}
+u=d.get("usage") or {}
+if isinstance(u,str):
+    try: u=json.loads(u.replace("'",'"'))
+    except Exception: u={}
+r=d.get("response") or ""
+r=re.sub(r"\[([^\]]*)\]\(file://[^)]*\)",r"\1",r).replace(cwd+"/","")  # file:// linklerini sadeleştir
+open(run+"/last.txt","w").write(r)
+open(run+"/thread_id","w").write(d.get("conversation_id",""))
+if rc=="0" and (d.get("status")!="SUCCESS" or not r.strip()): open(run+"/agy_fail","w").write(d.get("status","?"))
+open(out,"a").write(f"{time.strftime('%F %T')},{mode},{model},{eff},{u.get('input_tokens',0)},{u.get('cache_read_tokens',0)},{u.get('output_tokens',0)},{dur},{rc},{run}\n")
+P
+  [ -f "$RUN/agy_fail" ] && RC=1
+  THREAD="$(cat "$RUN/thread_id" 2>/dev/null)"
+}
+
+# Codex başarısız olursa (kota, hata) Gemini ile bir kez daha dene. Kapatmak için CX_YEDEK=0
+yedek_dene() {
+  [ "$RC" -eq 0 ] || [ "${CX_YEDEK:-1}" = 0 ] || ! command -v agy >/dev/null && return
+  echo "(codex başarısız rc=$RC; gemini yedeği deneniyor)"
+  printf '\nSon mesajın yalnızca şu biçimde JSON olsun: {"durum":"tamam|kismen|basarisiz","ozet":"≤5 satır","degisen_dosyalar":[],"testler":"","sorular":[]}\n' >> "$RUN/prompt.md"
+  run_agy gemini-3.8-flash-high auto
+}
+
+fail_report() {
+  echo "[cx $MODE] HATA rc=$RC (${DUR}s) log: $RUN"
+  tail -n 5 "$RUN/stderr.txt" | clip 600
+  exit 1
+}
+
+# Şemalı sonucu kısa metne çevirir.
+report() {
+  [ "$RC" -ne 0 ] && fail_report
+  {
+    echo "[cx $MODE] $MODEL_USED/$EFFORT_USED ${DUR}s id=${THREAD:-?} log=$RUN"
+    python3 -I - "$RUN/last.txt" <<'P'
+import json,sys
+raw=open(sys.argv[1],encoding="utf-8",errors="replace").read().strip()
+j=raw[raw.find("{"):raw.rfind("}")+1] if "{" in raw else raw   # ```json çitlerini atla
+try: d=json.loads(j)
+except Exception: print(raw); sys.exit()
+if d.get("durum"): print(f"durum: {d['durum']}")
+print(d.get("ozet",""))
+if d.get("degisen_dosyalar"): print("dosyalar: "+", ".join(d["degisen_dosyalar"]))
+if d.get("testler"): print("testler: "+d["testler"])
+if d.get("sorular"): print("sorular: "+" | ".join(d["sorular"]))
+P
+    in_git && git diff --stat HEAD 2>/dev/null | tail -n 1
+  } | clip "$MAX_OUT"
+}
+
+read_task() {  # talimatı argümandan ya da stdin'den al
+  if [ $# -gt 0 ]; then printf '%s\n' "$*"; elif [ ! -t 0 ]; then cat; else die "talimat yok"; fi
+}
+
+case "$MODE" in
+  kod|test|hata|zor|basit)
+    task="$(read_task "$@")"
+    case "$MODE" in
+      kod)   m=gpt-6.1-sol e=medium eph=0 extra="" ;;
+      test)  m=gpt-6.1-sol e=medium eph=0 extra="Testleri yaz, çalıştır; hepsi geçene kadar düzelt. Var olan testleri silme/gevşetme." ;;
+      hata)  m=gpt-6.1-sol e=high   eph=0 extra="Önce hatayı yeniden üret, kök nedeni bul, en küçük doğru düzeltmeyi yap, sonra doğrula. Kök nedeni özette belirt." ;;
+      zor)   m=gpt-6-astra e=high   eph=0 extra="Bu, diğer modellerin zorlandığı bir iş. Derinlemesine düşün." ;;
+      basit) m=gpt-6-luna  e=low    eph=1 extra="Mekanik bir iş; kapsam dışına çıkma." ;;
+    esac
+    printf '%s\n%s\n\nGÖREV:\n%s\n' "$PRE_ORTAK" "$extra" "$task" > "$RUN/prompt.md"
+    run_codex "$m" "$e" workspace-write "$eph" --output-schema "$SCHEMA"
+    yedek_dene
+    report ;;
+
+  devam)
+    id="${1:-}"; [ -z "$id" ] && die "kullanım: cx devam <id> \"talimat\""; shift
+    read_task "$@" > "$RUN/prompt.md"
+    # Önceki oturumun modelini kullanmak için CX_MODEL verilmezse sol/medium varsayılır.
+    run_codex gpt-6.1-sol medium workspace-write 0 resume "$id"
+    THREAD="$id"; report ;;
+
+  ozet)  # tüm log Gemini'ye (dosyadan okur); olmazsa son 60 KB luna'ya
+    [ -t 0 ] && die "kullanım: <komut> 2>&1 | cx ozet [\"odak\"]"
+    tail -c 8000000 > "$RUN/girdi.log"
+    talimat="En fazla 6 satırda özetle. Hataları dosya:satır ile ver, tekrarları birleştir, başarılı satırları atla.${1:+ Odak: $*}"
+    if command -v agy >/dev/null; then
+      printf '%s dosyasını oku. Başka araç kullanma. %s\n' "$RUN/girdi.log" "$talimat" > "$RUN/prompt.md"
+      run_agy gemini-3.8-flash-low plan
+    else RC=1; fi
+    if [ "$RC" -ne 0 ]; then
+      { echo "$talimat Araç kullanma."; echo; echo "ÇIKTI (son kısım):"; tail -c 60000 "$RUN/girdi.log"; } > "$RUN/prompt.md"
+      run_codex gpt-6-luna low read-only 1
+    fi
+    [ "$RC" -ne 0 ] && fail_report
+    clip "$MAX_OUT" < "$RUN/last.txt" ;;
+
+  tara)  # kod tabanı sorusu; salt okuma
+    soru="$(read_task "$@")"
+    printf 'Bu depoda (%s) şu soruyu cevapla: %s\n\nKodu oku ama hiçbir dosyayı değiştirme. Cevap en fazla 15 satır; önemli yerleri göreli dosya:satır olarak ver. Plan/artifact oluşturma, onay isteme.\n' "$PWD" "$soru" > "$RUN/prompt.md"
+    run_agy "${CX_TARA_MODEL:-gemini-3.8-flash-medium}" plan
+    [ "$RC" -ne 0 ] && fail_report
+    { echo "[cx tara] $MODEL_USED ${DUR}s"; cat "$RUN/last.txt"; } | clip "${CX_MAX_OUT:-2500}" ;;
+
+  gor)  # resim/ekran görüntüsü analizi; Opus resmi hiç yüklemez
+    [ $# -lt 1 ] && die "kullanım: cx gor <resim> [\"soru\"]"
+    resim="$(realpath "$1")"; [ -f "$resim" ] || die "dosya yok: $1"; shift
+    printf 'Şu görseli incele: %s\nSoru: %s\nYalnızca görseli oku, başka dosyaya dokunma. En fazla 8 satır cevap ver. Plan/artifact oluşturma.\n' \
+      "$resim" "${*:-Görselde ne var? Arayüzse hataları/bozuklukları listele.}" > "$RUN/prompt.md"
+    run_agy gemini-3.8-flash-medium plan
+    [ "$RC" -ne 0 ] && fail_report
+    { echo "[cx gor] ${DUR}s"; cat "$RUN/last.txt"; } | clip "$MAX_OUT" ;;
+
+  ikinci)  # farklı model ailesiyle (Claude Sonnet 4.6) ikinci inceleme
+    in_git || die "git deposu değil"
+    printf 'Bu depodaki commit edilmemiş değişiklikleri incele (git diff HEAD ve git status ile izlenmeyen yeni dosyalar).%s\nYalnızca gerçek hataları, güvenlik sorunlarını ve kırılan davranışları raporla; stil yorumu yapma. Her bulgu: dosya:satır, sorun, neden. Bulgu yoksa "Bulgu yok." yaz. Hiçbir dosyayı değiştirme, plan/artifact oluşturma.\n' "${1:+ Odak: $*}" > "$RUN/prompt.md"
+    run_agy claude-sonnet-4-6 plan
+    [ "$RC" -ne 0 ] && fail_report
+    { echo "[cx ikinci] $MODEL_USED ${DUR}s"; cat "$RUN/last.txt"; } | clip "${CX_MAX_OUT:-2500}" ;;
+
+  resim)
+    [ $# -lt 2 ] && die "kullanım: cx resim \"prompt\" <hedef.png>"
+    prompt="$1"; hedef="$(realpath -m "$2")"; mkdir -p "$(dirname "$hedef")"
+    touch "$RUN/.basla"
+    printf 'Görsel üretme aracınla şu görseli üret: %s\n\nÜretilen dosyayı şu yola kopyala: %s\nBaşka hiçbir şey yapma. Son mesajın yalnızca dosya yolu olsun.\n' "$prompt" "$hedef" > "$RUN/prompt.md"
+    run_codex gpt-6.1-sol low workspace-write 1 --enable image_generation
+    if [ ! -s "$hedef" ]; then  # model kopyalamadıysa en yeni üretilen görseli al
+      yeni="$(find "$HOME/.codex/generated_images" -type f -newer "$RUN/.basla" -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
+      [ -n "$yeni" ] && cp "$yeni" "$hedef"
+    fi
+    if [ -s "$hedef" ]; then echo "[cx resim] ${DUR}s -> $hedef ($(du -h "$hedef" | cut -f1))"
+    else RC=${RC:-1}; [ "$RC" -eq 0 ] && RC=1; fail_report; fi ;;
+
+  incele)
+    in_git || die "git deposu değil"
+    m="${CX_MODEL:-gpt-6.1-sol}"; e="${CX_EFFORT:-medium}"; t0=$SECONDS
+    timeout "$TIMEOUT" codex exec review --uncommitted -m "$m" -c "model_reasoning_effort=\"$e\"" "$@" \
+      > "$RUN/last.txt" 2> "$RUN/stderr.txt"
+    RC=$?; DUR=$((SECONDS - t0)); MODEL_USED=$m; EFFORT_USED=$e; : > "$RUN/events.jsonl"; log_usage
+    [ "$RC" -ne 0 ] && fail_report
+    { echo "[cx incele] $m/$e ${DUR}s log=$RUN"; cat "$RUN/last.txt"; } | clip "${CX_MAX_OUT:-2500}" ;;
+
+  commit)
+    in_git || die "git deposu değil"
+    if git diff --cached --quiet; then git add -A; echo "(staged değişiklik yoktu; tümü eklendi)"; fi
+    git diff --cached --quiet && die "commit edilecek değişiklik yok"
+    { echo "Aşağıdaki staged diff için Conventional Commits biçiminde commit mesajı yaz. İlk satır ≤72 karakter; gerekirse boş satırdan sonra en fazla 4 madde. Diff'in dilini/proje dilini kullan. Yalnızca mesajı yaz; kod bloğu, tırnak ya da açıklama ekleme. Araç kullanma."
+      [ $# -gt 0 ] && echo "Bağlam: $*"
+      echo; git diff --cached --stat; echo; git diff --cached | head -c 15000; } > "$RUN/prompt.md"
+    run_codex gpt-6-luna low read-only 1
+    [ "$RC" -ne 0 ] && fail_report
+    sed -i '/^```/d' "$RUN/last.txt"
+    [ -s "$RUN/last.txt" ] || die "boş commit mesajı"
+    git commit -q -F "$RUN/last.txt" && git log -1 --format='[cx commit] %h %s' ;;
+
+  pr)
+    in_git || die "git deposu değil"
+    base="${1:-$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo main)}"
+    { echo "Bu dal için PR açıklaması yaz (Markdown): ## Özet (2-4 madde), ## Değişiklikler, ## Test. Kısa tut. Araç kullanma."
+      echo; git log --oneline "$base"..HEAD | head -50; echo; git diff --stat "$base"...HEAD | tail -40
+      echo; git diff "$base"...HEAD | head -c 20000; } > "$RUN/prompt.md"
+    run_codex gpt-6-luna low read-only 1
+    [ "$RC" -ne 0 ] && fail_report
+    cp "$RUN/last.txt" "$RUN/PR.md"; echo "[cx pr] ${DUR}s açıklama: $RUN/PR.md" ;;
+
+  durum)
+    [ -f "$USAGE" ] || { echo "kayıt yok"; exit 0; }
+    python3 -I - "$USAGE" <<'P'
+import csv,sys,collections
+t=collections.defaultdict(lambda:[0,0,0,0,0])
+for r in csv.DictReader(open(sys.argv[1])):
+    k=(r["mod"],r["model"]); a=t[k]
+    a[0]+=1; a[1]+=int(r["girdi"] or 0); a[2]+=int(r["onbellek"] or 0); a[3]+=int(r["cikti"] or 0); a[4]+=int(r["sure_sn"] or 0)
+print(f"{'mod':8}{'model':26}{'çağrı':>6}{'girdi':>10}{'önbellek':>10}{'çıktı':>9}{'sn':>7}")
+for (m,mo),a in sorted(t.items()): print(f"{m:8}{mo:26}{a[0]:>6}{a[1]:>10}{a[2]:>10}{a[3]:>9}{a[4]:>7}")
+P
+    ;;
+  -h|--help|yardim) usage ;;
+  *) usage; exit 2 ;;
+esac

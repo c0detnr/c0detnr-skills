@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["durum", "ozet", "degisen_dosyalar", "testler", "sorular"],
+  "properties": {
+    "durum": { "type": "string", "enum": ["tamam", "kismen", "basarisiz"] },
+    "ozet": { "type": "string", "description": "En fazla 5 kısa satır" },
+    "degisen_dosyalar": { "type": "array", "items": { "type": "string" } },
+    "testler": { "type": "string", "description": "Çalıştırılan komut ve sonucu, tek satır; yoksa boş" },
+    "sorular": { "type": "array", "items": { "type": "string" }, "description": "Varsayımlar veya yöneticinin karar vermesi gerekenler" }
+  }
+}
