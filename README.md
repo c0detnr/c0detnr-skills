@@ -1,4 +1,4 @@
-# devret — Opus yönetir, Codex ve Gemini yapar
+# Opus yönetir, Codex ve Gemini yapar
 
 Claude Code (Opus 5.5) plan yapar ve sonucu doğrular. İşleri `cx` komutu Codex ve Antigravity (`agy`) modellerine devreder. Uzun çıktılar diskte kalır, Opus'a yalnızca birkaç satırlık özet döner.
 
