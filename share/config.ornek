@@ -1,6 +1,6 @@
 # c0detnr / cx ayarları
-# Konum: ~/.c0detnr/config  (tüm projeler)
-#        <proje>/.c0detnr/config  (yalnızca o proje; buradakileri ezer)
+# Konum: <proje>/.c0detnr/config  (bu proje; install.sh /proje/yolu oluşturur)
+#        ~/.c0detnr/config        (isteğe bağlı ortak ayar; proje dosyası bunu ezer)
 # Biçim: mod = model [effort]    — '#' sonrası yorumdur. Silinen satır varsayılana döner.
 # Etkin değerleri görmek için: cx config
 

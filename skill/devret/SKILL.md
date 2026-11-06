@@ -39,7 +39,7 @@ G
 
 ## Kurallar
 
-- Hangi modun hangi modeli kullandığı `~/.c0detnr/config` dosyasında; `cx config` ile görülür. Kullanıcı model değiştirmek isterse bu dosyayı düzenle.
+- Hangi modun hangi modeli kullandığı projenin `.c0detnr/config` dosyasında; `cx config` ile görülür. Kullanıcı model değiştirmek isterse bu dosyayı düzenle.
 
 - 3 satırdan küçük düzeltmeyi kendin yap; devretme maliyeti daha yüksek.
 - Doğrulama: `cx` çıktısındaki özet ve diff istatistiği çoğu zaman yeter. Yalnızca riskli dosyada `git diff -- <dosya>` oku.

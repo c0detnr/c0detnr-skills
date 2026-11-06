@@ -41,15 +41,17 @@ fi
 
 # ~/.c0detnr: ayarlar + loglar. Var olan config'e dokunma.
 CX_HOME="${CX_HOME:-$HOME/.c0detnr}"
-mkdir -p "$CX_HOME"
-if [ -f "$CX_HOME/config" ]; then
-  echo "✓ config korundu: $CX_HOME/config"
-else
-  cp "$KIT/share/config.ornek" "$CX_HOME/config"
-  echo "✓ config: $CX_HOME/config (modelleri buradan değiştirin)"
-fi
+mkdir -p "$CX_HOME"   # loglar ve token kaydı burada
+
+# config_kur <dizin>: <dizin>/config yoksa şablondan oluşturur; varsa dokunmaz
+config_kur() {
+  mkdir -p "$1"
+  if [ -f "$1/config" ]; then echo "✓ config korundu: $1/config"
+  else cp "$KIT/share/config.ornek" "$1/config"; echo "✓ config: $1/config (modelleri buradan değiştirin)"; fi
+}
 
 hedef="${1:-}"
+if [ -z "$hedef" ] || [ "$hedef" = "--global" ]; then config_kur "$CX_HOME"; fi
 [ -z "$hedef" ] && exit 0
 
 if [ "$hedef" = "--global" ]; then
@@ -69,9 +71,14 @@ mkdir -p "$proje/.claude/skills"
 rm -rf "$proje/.claude/skills/devret"
 cp -r "$KIT/skill/devret" "$proje/.claude/skills/devret"
 echo "✓ skill: $proje/.claude/skills/devret"
+config_kur "$proje/.c0detnr"   # bu projenin modelleri
 
 for ad in CLAUDE.md AGENTS.md; do
   md="$proje/$ad"
+  # CLAUDE.md zaten AGENTS.md'yi içe aktarıyorsa kural iki kez yüklenmesin
+  if [ "$ad" = CLAUDE.md ] && grep -q '^@AGENTS\.md' "$md" 2>/dev/null; then
+    echo "• CLAUDE.md, AGENTS.md'yi içe aktarıyor; kural yalnızca AGENTS.md'ye eklenecek"; continue
+  fi
   if ! grep -q "<!-- devret -->" "$md" 2>/dev/null; then
     { [ -s "$md" ] && echo; cat "$KIT/share/CLAUDE.snippet.md"; } >> "$md"
     echo "✓ kural eklendi: $md"
@@ -82,9 +89,13 @@ done
 ayar="$proje/.claude/settings.json"
 "$PY" -I -X utf8 - "$ayar" <<'P'
 import json,os,sys
-p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")) if os.path.exists(p) else {}
+p=sys.argv[1]; raw=open(p,"rb").read() if os.path.exists(p) else b""
+d=json.loads(raw.decode("utf-8-sig")) if raw.strip() else {}
 a=d.setdefault("permissions",{}).setdefault("allow",[])
-for r in ("Bash(cx:*)","Bash(cx *)"):
-    if r not in a: a.append(r)
-json.dump(d,open(p,"w",encoding="utf-8"),indent=2,ensure_ascii=False); print("✓ izin: "+p)
+yeni=[r for r in ("Bash(cx:*)","Bash(cx *)") if r not in a]
+if not yeni: print("✓ izin zaten var: "+p); sys.exit()
+a.extend(yeni)
+nl="\r\n" if b"\r\n" in raw else "\n"   # dosyanın satır sonunu koru
+out=json.dumps(d,indent=2,ensure_ascii=False)+"\n"
+open(p,"w",encoding="utf-8",newline=nl).write(out); print("✓ izin: "+p)
 P

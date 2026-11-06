@@ -79,7 +79,7 @@ pr|[base] PR açıklaması yaz
 devam|<id> "ek talimat" önceki oturumu sürdür
 E
   printf '  %-7s %s\n' durum "token kullanım özeti" config "etkin ayarları ve dosya yollarını göster"
-  echo "Modelleri değiştirmek için: $CX_HOME/config (cx config). Tek seferlik: CX_MODEL, CX_EFFORT, CX_AGY_MODEL."
+  echo "Modelleri değiştirmek için: $(winpath "${CFG_FILES[-1]:-$PROJ_ROOT/.c0detnr/config}") (cx config). Tek seferlik: CX_MODEL, CX_EFFORT, CX_AGY_MODEL."
 }
 
 die() { echo "cx: $*" >&2; exit 2; }
@@ -304,18 +304,17 @@ case "$MODE" in
     [ "$RC" -ne 0 ] && fail_report
     cp "$RUN/last.txt" "$RUN/PR.md"; echo "[cx pr] ${DUR}s açıklama: $RUN/PR.md" ;;
 
-  config)  # etkin ayarlar; ~/.c0detnr/config yoksa örnekten oluştur
-    if [ ! -f "$CX_HOME/config" ]; then
-      mkdir -p "$CX_HOME"; cp "$KIT_DIR/share/config.ornek" "$CX_HOME/config"
-      echo "(oluşturuldu: $(winpath "$CX_HOME/config"))"; load_cfg "$CX_HOME/config"
+  config)  # etkin ayarlar; hiç config yoksa bu projede örnekten oluştur
+    if [ ${#CFG_FILES[@]} -eq 0 ]; then   # hiç config yoksa bu projeye oluştur
+      mkdir -p "$PROJ_ROOT/.c0detnr"; cp "$KIT_DIR/share/config.ornek" "$PROJ_ROOT/.c0detnr/config"
+      echo "(oluşturuldu: $(winpath "$PROJ_ROOT/.c0detnr/config"))"; load_cfg "$PROJ_ROOT/.c0detnr/config"
     fi
     echo "ayar dosyaları (sonraki öncekini ezer):"
-    echo "  $(winpath "$CX_HOME/config")"
+    echo "  $(winpath "$CX_HOME/config") $([ -f "$CX_HOME/config" ] || echo '(yok)')"
     echo "  $(winpath "$PROJ_ROOT/.c0detnr/config") $([ -f "$PROJ_ROOT/.c0detnr/config" ] || echo '(yok)')"
     echo "etkin değerler:"
     for k in kod test hata zor basit devam resim incele commit pr ozet tara gor ikinci yedek ozet_yedek yedek_acik timeout max_out; do
-      printf '  %-11s %s
-' "$k" "${CFG[$k]}"
+      printf '  %-11s %s\n' "$k" "${CFG[$k]}"
     done
     echo "loglar: $(winpath "$STATE/runs")" ;;
 
