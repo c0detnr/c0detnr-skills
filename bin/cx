@@ -48,7 +48,17 @@ load_cfg() {  # anahtar = değer satırları; kod çalıştırmaz (source edilme
   done < "$f"
 }
 load_cfg "$CX_HOME/config"
-PROJ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Proje kökü: yukarı doğru ilk .c0detnr/config; yoksa git kökü; yoksa bulunulan klasör
+proje_bul() {
+  local d="$PWD"
+  while :; do
+    [ -f "$d/.c0detnr/config" ] && [ "$d/.c0detnr" != "$CX_HOME" ] && { printf '%s' "$d"; return; }
+    [ "$d" = / ] || [ -z "$d" ] && break
+    d="$(dirname "$d")"
+  done
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+PROJ_ROOT="$(proje_bul)"
 [ "$PROJ_ROOT/.c0detnr" != "$CX_HOME" ] && load_cfg "$PROJ_ROOT/.c0detnr/config"
 # cfgm <mod> -> MDL ve EFF değişkenlerini doldurur ("model [effort]")
 cfgm() { read -r MDL EFF _ <<< "${CFG[$1]:-}"; EFF="${EFF:-medium}"; }

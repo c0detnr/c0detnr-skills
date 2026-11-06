@@ -76,7 +76,7 @@ config_kur "$proje/.c0detnr"   # bu projenin modelleri
 for ad in CLAUDE.md AGENTS.md; do
   md="$proje/$ad"
   # CLAUDE.md zaten AGENTS.md'yi içe aktarıyorsa kural iki kez yüklenmesin
-  if [ "$ad" = CLAUDE.md ] && grep -q '^@AGENTS\.md' "$md" 2>/dev/null; then
+  if [ "$ad" = CLAUDE.md ] && grep -Eq '(^|[[:space:]])@(\./)?AGENTS\.md([[:space:]]|$)' "$md" 2>/dev/null; then
     echo "• CLAUDE.md, AGENTS.md'yi içe aktarıyor; kural yalnızca AGENTS.md'ye eklenecek"; continue
   fi
   if ! grep -q "<!-- devret -->" "$md" 2>/dev/null; then
