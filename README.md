@@ -9,7 +9,38 @@ Claude Code (Opus 5.5) plan yapar ve sonucu doğrular. İşleri `cx` komutu Code
 ./install.sh --global      # ya da tüm projelere
 ```
 
-## Model ve effort dağılımı
+### Windows
+
+Git Bash gerekir (Claude Code da onu kullanır). Kurulumu Git Bash içinden çalıştırın:
+
+```bash
+bash install.sh --global
+```
+
+- `~/.local/bin/cx` (Git Bash) ve `~/.local/bin/cx.cmd` (PowerShell/cmd) başlatıcıları yazılır. Bu klasör PATH'te değilse kullanıcı PATH'ine ekleyin.
+- Sembolik bağ yerine kopya kullanılır; depoyu güncelledikten sonra `install.sh`'ı yeniden çalıştırın.
+- Python olarak `python3`, `python`, `py` sırasıyla denenir (Store taslağı atlanır). Elle seçmek için: `CX_PYTHON=...`
+- `codex` ve `agy` yerel Windows exe'leri olduğu için istemlere giden yollar otomatik olarak `C:\...` biçimine çevrilir.
+- `.gitattributes` betikleri LF satır sonuyla tutar; `core.autocrlf=true` olsa da bash betikleri bozulmaz.
+
+## Ayarlar: `~/.c0detnr/`
+
+Kurulum `~/.c0detnr/config` dosyasını oluşturur (Windows: `C:\Users\<ad>\.c0detnr\config`). Her iş için model buradan değişir:
+
+```ini
+kod    = gpt-6.1-sol  medium     # mod = model [effort]
+hata   = gpt-6-astra  high
+tara   = gemini-3.8-flash-medium # agy modlarında effort yok
+yedek_acik = 0                   # codex başarısız olunca gemini'ye geçme
+```
+
+- Bir projeye özel ayar: `<proje>/.c0detnr/config` (yalnızca değiştirdiğin satırları yaz, gerisi global dosyadan gelir).
+- Sıra: varsayılan < `~/.c0detnr/config` < proje config'i < ortam değişkenleri (`CX_MODEL`, `CX_EFFORT`, `CX_AGY_MODEL`).
+- `cx config`: etkin değerleri ve hangi dosyaların okunduğunu gösterir.
+- Loglar ve token kaydı da burada: `~/.c0detnr/runs/`, `~/.c0detnr/usage.csv` (`cx durum` ile özet).
+- kod/test/hata/zor/basit/devam/resim/incele/commit/pr modları Codex'e, ozet/tara/gor/ikinci/yedek agy'ye gider; her moda o aracın tanıdığı bir model yaz.
+
+## Varsayılan model ve effort dağılımı
 
 | Mod | Model | Effort | Sandbox |
 |---|---|---|---|
@@ -26,7 +57,7 @@ Claude Code (Opus 5.5) plan yapar ve sonucu doğrular. İşleri `cx` komutu Code
 
 Codex başarısız olursa (kota, hata) kod/test/hata/zor/basit işleri `gemini-3.8-flash-high` ile bir kez daha denenir. Kapatmak için: `CX_YEDEK=0`.
 
-Tek seferlik değiştirmek için: `CX_MODEL=... CX_EFFORT=... cx kod "..."` (agy modları için `CX_AGY_MODEL=...`)
+Kalıcı değiştirmek için `~/.c0detnr/config`; tek seferlik için: `CX_MODEL=... CX_EFFORT=... cx kod "..."` (agy modları için `CX_AGY_MODEL=...`)
 
 ## Dosyalar
 
@@ -34,4 +65,4 @@ Tek seferlik değiştirmek için: `CX_MODEL=... CX_EFFORT=... cx kod "..."` (agy
 - `skill/devret/SKILL.md`: Opus'a ne zaman ve nasıl devredeceğini anlatır
 - `share/sonuc.schema.json`: Codex'in son cevabının biçimi
 - `share/CLAUDE.snippet.md`: projenin CLAUDE.md ve AGENTS.md dosyalarına eklenen kural
-- Loglar ve token kaydı: `~/.local/state/cx/` (`cx durum` ile özet)
+- `share/config.ornek`: `~/.c0detnr/config` için şablon

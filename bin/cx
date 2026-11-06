@@ -3,38 +3,87 @@
 # Ham loglar diske yazılır; ekrana (Opus'a) yalnızca kısa bir özet basılır.
 set -uo pipefail
 
-KIT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+KIT_DIR="${CX_KIT_DIR:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
 SCHEMA="$KIT_DIR/share/sonuc.schema.json"
-STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cx"
+
+# --- platform: Windows'ta (Git Bash/MSYS) yerel exe'lere (codex, agy) giden yollar C:\... biçiminde olmalı
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WIN=1 ;; *) IS_WIN=0 ;; esac
+winpath() { if [ "$IS_WIN" = 1 ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+# python3 Windows'ta çoğu zaman Microsoft Store taslağıdır; gerçekten çalışan ilk yorumlayıcıyı seç
+PY="${CX_PYTHON:-}"
+if [ -z "$PY" ]; then
+  for c in python3 python py; do
+    "$c" -c 'import sys;sys.exit(sys.version_info<(3,6))' >/dev/null 2>&1 && { PY="$c"; break; }
+  done
+fi
+[ -n "$PY" ] || { echo "cx: Python 3 bulunamadı (CX_PYTHON ile belirtin)" >&2; exit 2; }
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8   # Windows'ta cp1254 yerine UTF-8
+# --- ~/.c0detnr: ayarlar, loglar, token kaydı
+CX_HOME="${CX_HOME:-$HOME/.c0detnr}"
+STATE="$CX_HOME"
 USAGE="$STATE/usage.csv"
-MAX_OUT="${CX_MAX_OUT:-1500}"   # Opus'a dönen en fazla karakter
-TIMEOUT="${CX_TIMEOUT:-1800}"
+
+# --- ayarlar: varsayılan < ~/.c0detnr/config < <proje>/.c0detnr/config < ortam değişkenleri
+declare -A CFG=(
+  [kod]="gpt-6.1-sol medium"   [test]="gpt-6.1-sol medium"  [hata]="gpt-6.1-sol high"
+  [zor]="gpt-6-astra high"     [basit]="gpt-6-luna low"     [devam]="gpt-6.1-sol medium"
+  [resim]="gpt-6.1-sol low"    [incele]="gpt-6.1-sol medium"
+  [commit]="gpt-6-luna low"    [pr]="gpt-6-luna low"
+  [ozet]="gemini-3.8-flash-low"   [tara]="gemini-3.8-flash-medium"
+  [gor]="gemini-3.8-flash-medium" [ikinci]="claude-sonnet-4-6"
+  [yedek]="gemini-3.8-flash-high" [ozet_yedek]="gpt-6-luna low" [yedek_acik]="1"
+  [timeout]="1800" [max_out]="1500"
+)
+CFG_FILES=()
+load_cfg() {  # anahtar = değer satırları; kod çalıştırmaz (source edilmez)
+  local f="$1" k v line
+  [ -f "$f" ] || return 0
+  CFG_FILES+=("$f")
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"; line="${line%%#*}"
+    [[ "$line" == *=* ]] || continue
+    k="${line%%=*}"; v="${line#*=}"
+    k="${k//[[:space:]]/}"; read -r v <<< "$v"
+    [ -n "$k" ] && [ -n "$v" ] && CFG[$k]="$v"
+  done < "$f"
+}
+load_cfg "$CX_HOME/config"
+PROJ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+[ "$PROJ_ROOT/.c0detnr" != "$CX_HOME" ] && load_cfg "$PROJ_ROOT/.c0detnr/config"
+# cfgm <mod> -> MDL ve EFF değişkenlerini doldurur ("model [effort]")
+cfgm() { read -r MDL EFF _ <<< "${CFG[$1]:-}"; EFF="${EFF:-medium}"; }
+
+MAX_OUT="${CX_MAX_OUT:-${CFG[max_out]}}"   # Opus'a dönen en fazla karakter
+TIMEOUT="${CX_TIMEOUT:-${CFG[timeout]}}"
+YEDEK_ACIK="${CX_YEDEK:-${CFG[yedek_acik]}}"
 
 usage() {
-  cat <<'E'
-kullanım: cx <mod> ["talimat"]   (talimat argüman ya da stdin)
-  kod     yeni özellik / refactor         gpt-6.1-sol  medium
-  test    test yaz, geçene kadar düzelt   gpt-6.1-sol  medium
-  hata    hata ayıkla ve düzelt           gpt-6.1-sol  high
-  zor     zor sorun / ikinci görüş        gpt-6-astra  high
-  basit   lint, rename, docs, çeviri      gpt-6-luna   low
-  ozet    stdin'deki logu özetle          gemini-3.8-flash-low (yedek: luna)  ör: npm test 2>&1 | cx ozet
-  tara    "soru" kod tabanını okuyup cevapla  gemini-3.8-flash-medium  salt okuma
-  gor     <resim> ["soru"] görsel analizi     gemini-3.8-flash-medium  salt okuma
-  ikinci  değişikliklere ikinci inceleme      claude-sonnet-4-6 (agy)  salt okuma
-  resim   "prompt" <hedef.png>            gpt-6.1-sol  low
-  incele  commit edilmemiş değişiklikleri incele  gpt-6.1-sol medium
-  commit  staged diff'ten mesaj yaz ve commit at gpt-6-luna low
-  pr      [base] PR açıklaması yaz            gpt-6-luna low
-  devam   <id> "ek talimat"  önceki kod/test/hata oturumunu sürdür
-  durum   token kullanım özeti
-Ortam: CX_MODEL, CX_EFFORT (codex), CX_AGY_MODEL (agy) ile ezilebilir.
-Codex başarısız olursa kod/test/hata/zor/basit Gemini ile bir kez yeniden denenir (CX_YEDEK=0 kapatır).
+  echo 'kullanım: cx <mod> ["talimat"]   (talimat argüman ya da stdin)'
+  local m d
+  while IFS='|' read -r m d; do
+    printf '  %-7s %-44s %s\n' "$m" "$d" "${CFG[$m]:-}"
+  done <<'E'
+kod|yeni özellik / refactor
+test|test yaz, geçene kadar düzelt
+hata|hata ayıkla ve düzelt
+zor|zor sorun / ikinci görüş
+basit|lint, rename, docs, çeviri
+ozet|stdin'deki logu özetle (npm test 2>&1 | cx ozet)
+tara|"soru" kod tabanını okuyup cevapla (salt okuma)
+gor|<resim> ["soru"] görsel analizi (salt okuma)
+ikinci|değişikliklere ikinci inceleme (salt okuma)
+resim|"prompt" <hedef.png>
+incele|commit edilmemiş değişiklikleri incele
+commit|staged diff'ten mesaj yaz ve commit at
+pr|[base] PR açıklaması yaz
+devam|<id> "ek talimat" önceki oturumu sürdür
 E
+  printf '  %-7s %s\n' durum "token kullanım özeti" config "etkin ayarları ve dosya yollarını göster"
+  echo "Modelleri değiştirmek için: $CX_HOME/config (cx config). Tek seferlik: CX_MODEL, CX_EFFORT, CX_AGY_MODEL."
 }
 
 die() { echo "cx: $*" >&2; exit 2; }
-clip() { python3 -I -c 'import sys;s=sys.stdin.read();n=int(sys.argv[1]);print(s if len(s)<=n else s[:n]+"\n…(kırpıldı)")' "$1"; }
+clip() { "$PY" -I -X utf8 -c 'import sys;s=sys.stdin.read();n=int(sys.argv[1]);print(s if len(s)<=n else s[:n]+"\n…(kırpıldı)")' "$1"; }
 in_git() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 
 MODE="${1:-}"; [ -z "$MODE" ] && { usage; exit 2; }; shift || true
@@ -60,7 +109,7 @@ run_codex() {
 }
 
 log_usage() {
-  python3 -I - "$RUN/events.jsonl" "$USAGE" "$MODE" "$MODEL_USED" "$EFFORT_USED" "$DUR" "$RC" "$RUN" <<'P'
+  "$PY" -I -X utf8 - "$RUN/events.jsonl" "$USAGE" "$MODE" "$MODEL_USED" "$EFFORT_USED" "$DUR" "$RC" "$RUN" <<'P'
 import json,sys,time
 ev,out,mode,model,eff,dur,rc,run=sys.argv[1:]
 i=c=o=0; tid=""
@@ -73,8 +122,8 @@ try:
         if u:
             i+=u.get("input_tokens",0); c+=u.get("cached_input_tokens",0); o+=u.get("output_tokens",0)
 except FileNotFoundError: pass
-open(out,"a").write(f"{time.strftime('%F %T')},{mode},{model},{eff},{i},{c},{o},{dur},{rc},{run}\n")
-open(run+"/thread_id","w").write(tid)
+open(out,"a",encoding="utf-8").write(f"{time.strftime('%F %T')},{mode},{model},{eff},{i},{c},{o},{dur},{rc},{run}\n")
+open(run+"/thread_id","w",encoding="utf-8").write(tid)
 P
   THREAD="$(cat "$RUN/thread_id" 2>/dev/null)"
 }
@@ -88,32 +137,34 @@ run_agy() {
     --dangerously-skip-permissions --output-format json --print-timeout "${TIMEOUT}s" \
     > "$RUN/agy.json" 2> "$RUN/stderr.txt"
   RC=$?; DUR=$((SECONDS - t0)); MODEL_USED="$model"; EFFORT_USED="$mode"
-  python3 -I - "$RUN" "$USAGE" "$MODE" "$model" "$mode" "$DUR" "$RC" "$PWD" <<'P'
+  "$PY" -I -X utf8 - "$RUN" "$USAGE" "$MODE" "$model" "$mode" "$DUR" "$RC" "$(winpath "$PWD")" <<'P'
 import json,re,sys,time
 run,out,mode,model,eff,dur,rc,cwd=sys.argv[1:]
-try: d=json.load(open(run+"/agy.json"))
+try: d=json.load(open(run+"/agy.json",encoding="utf-8",errors="replace"))
 except Exception: d={}
 u=d.get("usage") or {}
 if isinstance(u,str):
     try: u=json.loads(u.replace("'",'"'))
     except Exception: u={}
 r=d.get("response") or ""
-r=re.sub(r"\[([^\]]*)\]\(file://[^)]*\)",r"\1",r).replace(cwd+"/","")  # file:// linklerini sadeleştir
-open(run+"/last.txt","w").write(r)
-open(run+"/thread_id","w").write(d.get("conversation_id",""))
-if rc=="0" and (d.get("status")!="SUCCESS" or not r.strip()): open(run+"/agy_fail","w").write(d.get("status","?"))
-open(out,"a").write(f"{time.strftime('%F %T')},{mode},{model},{eff},{u.get('input_tokens',0)},{u.get('cache_read_tokens',0)},{u.get('output_tokens',0)},{dur},{rc},{run}\n")
+r=re.sub(r"\[([^\]]*)\]\(file://[^)]*\)",r"\1",r)
+# Windows: C:\x\y\ ve C:/x/y/ biçimlerinin ikisini de sadeleştir
+for p in {cwd, cwd.replace("\\","/")}: r=r.replace(p.rstrip("/\\")+"/","").replace(p.rstrip("/\\")+"\\","")  # file:// linklerini sadeleştir
+open(run+"/last.txt","w",encoding="utf-8").write(r)
+open(run+"/thread_id","w",encoding="utf-8").write(d.get("conversation_id",""))
+if rc=="0" and (d.get("status")!="SUCCESS" or not r.strip()): open(run+"/agy_fail","w",encoding="utf-8").write(d.get("status","?"))
+open(out,"a",encoding="utf-8").write(f"{time.strftime('%F %T')},{mode},{model},{eff},{u.get('input_tokens',0)},{u.get('cache_read_tokens',0)},{u.get('output_tokens',0)},{dur},{rc},{run}\n")
 P
   [ -f "$RUN/agy_fail" ] && RC=1
   THREAD="$(cat "$RUN/thread_id" 2>/dev/null)"
 }
 
-# Codex başarısız olursa (kota, hata) Gemini ile bir kez daha dene. Kapatmak için CX_YEDEK=0
+# Codex başarısız olursa (kota, hata) Gemini ile bir kez daha dene. Kapatmak için config: yedek_acik = 0 (ya da CX_YEDEK=0)
 yedek_dene() {
-  [ "$RC" -eq 0 ] || [ "${CX_YEDEK:-1}" = 0 ] || ! command -v agy >/dev/null && return
+  [ "$RC" -eq 0 ] || [ "$YEDEK_ACIK" = 0 ] || ! command -v agy >/dev/null && return
   echo "(codex başarısız rc=$RC; gemini yedeği deneniyor)"
   printf '\nSon mesajın yalnızca şu biçimde JSON olsun: {"durum":"tamam|kismen|basarisiz","ozet":"≤5 satır","degisen_dosyalar":[],"testler":"","sorular":[]}\n' >> "$RUN/prompt.md"
-  run_agy gemini-3.8-flash-high auto
+  run_agy "${CFG[yedek]}" auto
 }
 
 fail_report() {
@@ -127,7 +178,7 @@ report() {
   [ "$RC" -ne 0 ] && fail_report
   {
     echo "[cx $MODE] $MODEL_USED/$EFFORT_USED ${DUR}s id=${THREAD:-?} log=$RUN"
-    python3 -I - "$RUN/last.txt" <<'P'
+    "$PY" -I -X utf8 - "$RUN/last.txt" <<'P'
 import json,sys
 raw=open(sys.argv[1],encoding="utf-8",errors="replace").read().strip()
 j=raw[raw.find("{"):raw.rfind("}")+1] if "{" in raw else raw   # ```json çitlerini atla
@@ -151,11 +202,11 @@ case "$MODE" in
   kod|test|hata|zor|basit)
     task="$(read_task "$@")"
     case "$MODE" in
-      kod)   m=gpt-6.1-sol e=medium eph=0 extra="" ;;
-      test)  m=gpt-6.1-sol e=medium eph=0 extra="Testleri yaz, çalıştır; hepsi geçene kadar düzelt. Var olan testleri silme/gevşetme." ;;
-      hata)  m=gpt-6.1-sol e=high   eph=0 extra="Önce hatayı yeniden üret, kök nedeni bul, en küçük doğru düzeltmeyi yap, sonra doğrula. Kök nedeni özette belirt." ;;
-      zor)   m=gpt-6-astra e=high   eph=0 extra="Bu, diğer modellerin zorlandığı bir iş. Derinlemesine düşün." ;;
-      basit) m=gpt-6-luna  e=low    eph=1 extra="Mekanik bir iş; kapsam dışına çıkma." ;;
+      kod)   cfgm "$MODE"; m=$MDL e=$EFF eph=0 extra="" ;;
+      test)  cfgm "$MODE"; m=$MDL e=$EFF eph=0 extra="Testleri yaz, çalıştır; hepsi geçene kadar düzelt. Var olan testleri silme/gevşetme." ;;
+      hata)  cfgm "$MODE"; m=$MDL e=$EFF eph=0 extra="Önce hatayı yeniden üret, kök nedeni bul, en küçük doğru düzeltmeyi yap, sonra doğrula. Kök nedeni özette belirt." ;;
+      zor)   cfgm "$MODE"; m=$MDL e=$EFF eph=0 extra="Bu, diğer modellerin zorlandığı bir iş. Derinlemesine düşün." ;;
+      basit) cfgm "$MODE"; m=$MDL e=$EFF eph=1 extra="Mekanik bir iş; kapsam dışına çıkma." ;;
     esac
     printf '%s\n%s\n\nGÖREV:\n%s\n' "$PRE_ORTAK" "$extra" "$task" > "$RUN/prompt.md"
     run_codex "$m" "$e" workspace-write "$eph" --output-schema "$SCHEMA"
@@ -166,7 +217,7 @@ case "$MODE" in
     id="${1:-}"; [ -z "$id" ] && die "kullanım: cx devam <id> \"talimat\""; shift
     read_task "$@" > "$RUN/prompt.md"
     # Önceki oturumun modelini kullanmak için CX_MODEL verilmezse sol/medium varsayılır.
-    run_codex gpt-6.1-sol medium workspace-write 0 resume "$id"
+    cfgm devam; run_codex "$MDL" "$EFF" workspace-write 0 resume "$id"
     THREAD="$id"; report ;;
 
   ozet)  # tüm log Gemini'ye (dosyadan okur); olmazsa son 60 KB luna'ya
@@ -174,20 +225,20 @@ case "$MODE" in
     tail -c 8000000 > "$RUN/girdi.log"
     talimat="En fazla 6 satırda özetle. Hataları dosya:satır ile ver, tekrarları birleştir, başarılı satırları atla.${1:+ Odak: $*}"
     if command -v agy >/dev/null; then
-      printf '%s dosyasını oku. Başka araç kullanma. %s\n' "$RUN/girdi.log" "$talimat" > "$RUN/prompt.md"
-      run_agy gemini-3.8-flash-low plan
+      printf '%s dosyasını oku. Başka araç kullanma. %s\n' "$(winpath "$RUN/girdi.log")" "$talimat" > "$RUN/prompt.md"
+      run_agy "${CFG[ozet]}" plan
     else RC=1; fi
     if [ "$RC" -ne 0 ]; then
       { echo "$talimat Araç kullanma."; echo; echo "ÇIKTI (son kısım):"; tail -c 60000 "$RUN/girdi.log"; } > "$RUN/prompt.md"
-      run_codex gpt-6-luna low read-only 1
+      cfgm ozet_yedek; run_codex "$MDL" "$EFF" read-only 1
     fi
     [ "$RC" -ne 0 ] && fail_report
     clip "$MAX_OUT" < "$RUN/last.txt" ;;
 
   tara)  # kod tabanı sorusu; salt okuma
     soru="$(read_task "$@")"
-    printf 'Bu depoda (%s) şu soruyu cevapla: %s\n\nKodu oku ama hiçbir dosyayı değiştirme. Cevap en fazla 15 satır; önemli yerleri göreli dosya:satır olarak ver. Plan/artifact oluşturma, onay isteme.\n' "$PWD" "$soru" > "$RUN/prompt.md"
-    run_agy "${CX_TARA_MODEL:-gemini-3.8-flash-medium}" plan
+    printf 'Bu depoda (%s) şu soruyu cevapla: %s\n\nKodu oku ama hiçbir dosyayı değiştirme. Cevap en fazla 15 satır; önemli yerleri göreli dosya:satır olarak ver. Plan/artifact oluşturma, onay isteme.\n' "$(winpath "$PWD")" "$soru" > "$RUN/prompt.md"
+    run_agy "${CX_TARA_MODEL:-${CFG[tara]}}" plan
     [ "$RC" -ne 0 ] && fail_report
     { echo "[cx tara] $MODEL_USED ${DUR}s"; cat "$RUN/last.txt"; } | clip "${CX_MAX_OUT:-2500}" ;;
 
@@ -195,15 +246,15 @@ case "$MODE" in
     [ $# -lt 1 ] && die "kullanım: cx gor <resim> [\"soru\"]"
     resim="$(realpath "$1")"; [ -f "$resim" ] || die "dosya yok: $1"; shift
     printf 'Şu görseli incele: %s\nSoru: %s\nYalnızca görseli oku, başka dosyaya dokunma. En fazla 8 satır cevap ver. Plan/artifact oluşturma.\n' \
-      "$resim" "${*:-Görselde ne var? Arayüzse hataları/bozuklukları listele.}" > "$RUN/prompt.md"
-    run_agy gemini-3.8-flash-medium plan
+      "$(winpath "$resim")" "${*:-Görselde ne var? Arayüzse hataları/bozuklukları listele.}" > "$RUN/prompt.md"
+    run_agy "${CFG[gor]}" plan
     [ "$RC" -ne 0 ] && fail_report
     { echo "[cx gor] ${DUR}s"; cat "$RUN/last.txt"; } | clip "$MAX_OUT" ;;
 
   ikinci)  # farklı model ailesiyle (Claude Sonnet 4.6) ikinci inceleme
     in_git || die "git deposu değil"
     printf 'Bu depodaki commit edilmemiş değişiklikleri incele (git diff HEAD ve git status ile izlenmeyen yeni dosyalar).%s\nYalnızca gerçek hataları, güvenlik sorunlarını ve kırılan davranışları raporla; stil yorumu yapma. Her bulgu: dosya:satır, sorun, neden. Bulgu yoksa "Bulgu yok." yaz. Hiçbir dosyayı değiştirme, plan/artifact oluşturma.\n' "${1:+ Odak: $*}" > "$RUN/prompt.md"
-    run_agy claude-sonnet-4-6 plan
+    run_agy "${CFG[ikinci]}" plan
     [ "$RC" -ne 0 ] && fail_report
     { echo "[cx ikinci] $MODEL_USED ${DUR}s"; cat "$RUN/last.txt"; } | clip "${CX_MAX_OUT:-2500}" ;;
 
@@ -211,10 +262,11 @@ case "$MODE" in
     [ $# -lt 2 ] && die "kullanım: cx resim \"prompt\" <hedef.png>"
     prompt="$1"; hedef="$(realpath -m "$2")"; mkdir -p "$(dirname "$hedef")"
     touch "$RUN/.basla"
-    printf 'Görsel üretme aracınla şu görseli üret: %s\n\nÜretilen dosyayı şu yola kopyala: %s\nBaşka hiçbir şey yapma. Son mesajın yalnızca dosya yolu olsun.\n' "$prompt" "$hedef" > "$RUN/prompt.md"
-    run_codex gpt-6.1-sol low workspace-write 1 --enable image_generation
+    printf 'Görsel üretme aracınla şu görseli üret: %s\n\nÜretilen dosyayı şu yola kopyala: %s\nBaşka hiçbir şey yapma. Son mesajın yalnızca dosya yolu olsun.\n' "$prompt" "$(winpath "$hedef")" > "$RUN/prompt.md"
+    cfgm resim; run_codex "$MDL" "$EFF" workspace-write 1 --enable image_generation
+    CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"; [ "$IS_WIN" = 1 ] && CODEX_DIR="$(cygpath -u "$CODEX_DIR")"
     if [ ! -s "$hedef" ]; then  # model kopyalamadıysa en yeni üretilen görseli al
-      yeni="$(find "$HOME/.codex/generated_images" -type f -newer "$RUN/.basla" -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
+      yeni="$(find "$CODEX_DIR/generated_images" -type f -newer "$RUN/.basla" -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
       [ -n "$yeni" ] && cp "$yeni" "$hedef"
     fi
     if [ -s "$hedef" ]; then echo "[cx resim] ${DUR}s -> $hedef ($(du -h "$hedef" | cut -f1))"
@@ -222,7 +274,7 @@ case "$MODE" in
 
   incele)
     in_git || die "git deposu değil"
-    m="${CX_MODEL:-gpt-6.1-sol}"; e="${CX_EFFORT:-medium}"; t0=$SECONDS
+    cfgm incele; m="${CX_MODEL:-$MDL}"; e="${CX_EFFORT:-$EFF}"; t0=$SECONDS
     timeout "$TIMEOUT" codex exec review --uncommitted -m "$m" -c "model_reasoning_effort=\"$e\"" "$@" \
       > "$RUN/last.txt" 2> "$RUN/stderr.txt"
     RC=$?; DUR=$((SECONDS - t0)); MODEL_USED=$m; EFFORT_USED=$e; : > "$RUN/events.jsonl"; log_usage
@@ -236,7 +288,7 @@ case "$MODE" in
     { echo "Aşağıdaki staged diff için Conventional Commits biçiminde commit mesajı yaz. İlk satır ≤72 karakter; gerekirse boş satırdan sonra en fazla 4 madde. Diff'in dilini/proje dilini kullan. Yalnızca mesajı yaz; kod bloğu, tırnak ya da açıklama ekleme. Araç kullanma."
       [ $# -gt 0 ] && echo "Bağlam: $*"
       echo; git diff --cached --stat; echo; git diff --cached | head -c 15000; } > "$RUN/prompt.md"
-    run_codex gpt-6-luna low read-only 1
+    cfgm commit; run_codex "$MDL" "$EFF" read-only 1
     [ "$RC" -ne 0 ] && fail_report
     sed -i '/^```/d' "$RUN/last.txt"
     [ -s "$RUN/last.txt" ] || die "boş commit mesajı"
@@ -248,16 +300,31 @@ case "$MODE" in
     { echo "Bu dal için PR açıklaması yaz (Markdown): ## Özet (2-4 madde), ## Değişiklikler, ## Test. Kısa tut. Araç kullanma."
       echo; git log --oneline "$base"..HEAD | head -50; echo; git diff --stat "$base"...HEAD | tail -40
       echo; git diff "$base"...HEAD | head -c 20000; } > "$RUN/prompt.md"
-    run_codex gpt-6-luna low read-only 1
+    cfgm pr; run_codex "$MDL" "$EFF" read-only 1
     [ "$RC" -ne 0 ] && fail_report
     cp "$RUN/last.txt" "$RUN/PR.md"; echo "[cx pr] ${DUR}s açıklama: $RUN/PR.md" ;;
 
+  config)  # etkin ayarlar; ~/.c0detnr/config yoksa örnekten oluştur
+    if [ ! -f "$CX_HOME/config" ]; then
+      mkdir -p "$CX_HOME"; cp "$KIT_DIR/share/config.ornek" "$CX_HOME/config"
+      echo "(oluşturuldu: $(winpath "$CX_HOME/config"))"; load_cfg "$CX_HOME/config"
+    fi
+    echo "ayar dosyaları (sonraki öncekini ezer):"
+    echo "  $(winpath "$CX_HOME/config")"
+    echo "  $(winpath "$PROJ_ROOT/.c0detnr/config") $([ -f "$PROJ_ROOT/.c0detnr/config" ] || echo '(yok)')"
+    echo "etkin değerler:"
+    for k in kod test hata zor basit devam resim incele commit pr ozet tara gor ikinci yedek ozet_yedek yedek_acik timeout max_out; do
+      printf '  %-11s %s
+' "$k" "${CFG[$k]}"
+    done
+    echo "loglar: $(winpath "$STATE/runs")" ;;
+
   durum)
     [ -f "$USAGE" ] || { echo "kayıt yok"; exit 0; }
-    python3 -I - "$USAGE" <<'P'
+    "$PY" -I -X utf8 - "$USAGE" <<'P'
 import csv,sys,collections
 t=collections.defaultdict(lambda:[0,0,0,0,0])
-for r in csv.DictReader(open(sys.argv[1])):
+for r in csv.DictReader(open(sys.argv[1],encoding="utf-8",newline="")):
     k=(r["mod"],r["model"]); a=t[k]
     a[0]+=1; a[1]+=int(r["girdi"] or 0); a[2]+=int(r["onbellek"] or 0); a[3]+=int(r["cikti"] or 0); a[4]+=int(r["sure_sn"] or 0)
 print(f"{'mod':8}{'model':26}{'çağrı':>6}{'girdi':>10}{'önbellek':>10}{'çıktı':>9}{'sn':>7}")

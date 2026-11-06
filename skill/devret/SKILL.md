@@ -20,7 +20,7 @@ Sen yöneticisin: anla, planla, talimat yaz, sonucu doğrula. İşi `cx` yapar. 
 | `cx tara "soru"` | kod tabanı sorusu (Gemini okur, sen dosya açmazsın). Explore ajanı yerine bunu kullan |
 | `cx gor resim.png ["soru"]` | ekran görüntüsü/görsel analizi; resmi kendin açma |
 | `cx incele` | commit öncesi kod incelemesi |
-| `cx ikinci` | riskli değişiklikte farklı model ailesiyle (Sonnet 4.6) ikinci inceleme |
+| `cx ikinci` | riskli değişiklikte farklı model ailesiyle ikinci inceleme |
 | `cx commit ["bağlam"]` | mesaj yazar ve commit atar (yalnızca kullanıcı isteyince) |
 | `cx pr [base]` | PR açıklaması dosyası |
 | `<komut> 2>&1 \| cx ozet ["odak"]` | uzun çıktıyı özetle; ham logu sen okuma |
@@ -38,6 +38,8 @@ G
 ```
 
 ## Kurallar
+
+- Hangi modun hangi modeli kullandığı `~/.c0detnr/config` dosyasında; `cx config` ile görülür. Kullanıcı model değiştirmek isterse bu dosyayı düzenle.
 
 - 3 satırdan küçük düzeltmeyi kendin yap; devretme maliyeti daha yüksek.
 - Doğrulama: `cx` çıktısındaki özet ve diff istatistiği çoğu zaman yeter. Yalnızca riskli dosyada `git diff -- <dosya>` oku.

@@ -1,0 +1,32 @@
+# c0detnr / cx ayarları
+# Konum: ~/.c0detnr/config  (tüm projeler)
+#        <proje>/.c0detnr/config  (yalnızca o proje; buradakileri ezer)
+# Biçim: mod = model [effort]    — '#' sonrası yorumdur. Silinen satır varsayılana döner.
+# Etkin değerleri görmek için: cx config
+
+# --- Codex modları (codex modelleri; effort: low | medium | high)
+kod    = gpt-6.1-sol  medium
+test   = gpt-6.1-sol  medium
+hata   = gpt-6.1-sol  high
+zor    = gpt-6-astra  high
+basit  = gpt-6-luna   low
+devam  = gpt-6.1-sol  medium
+resim  = gpt-6.1-sol  low
+incele = gpt-6.1-sol  medium
+commit = gpt-6-luna   low
+pr     = gpt-6-luna   low
+
+# --- Antigravity (agy) modları (effort yok)
+ozet   = gemini-3.8-flash-low
+tara   = gemini-3.8-flash-medium
+gor    = gemini-3.8-flash-medium
+ikinci = claude-sonnet-4-6
+
+# --- Yedekler
+yedek       = gemini-3.8-flash-high   # codex başarısız olursa kod/test/hata/zor/basit için (agy)
+ozet_yedek  = gpt-6-luna low          # agy yoksa ya da başarısızsa ozet için (codex)
+yedek_acik  = 1                       # 0 = yedek denemesi kapalı
+
+# --- Genel
+timeout = 1800    # saniye
+max_out = 1500    # Opus'a dönen en fazla karakter
