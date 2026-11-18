@@ -28,8 +28,8 @@ bash install.sh --global
 `./install.sh /proje/yolu` modelleri belirleyen ayar dosyasını projenin içine kurar: `<proje>/.c0detnr/config`. Dosya zaten varsa ona dokunmaz. Her iş için model buradan değişir:
 
 ```ini
-kod    = gpt-6.1-sol  medium     # mod = model [effort]
-hata   = gpt-6-astra  high
+kod    = gpt-6.2-sol  medium     # mod = model [effort]
+hata   = gpt-6.2-astra  high
 tara   = gemini-3.8-flash-medium # agy modlarında effort yok
 yedek_acik = 0                   # codex başarısız olunca gemini'ye geçme
 ```
@@ -46,12 +46,12 @@ yedek_acik = 0                   # codex başarısız olunca gemini'ye geçme
 
 | Mod | Model | Effort | Sandbox |
 |---|---|---|---|
-| kod, test | gpt-6.1-sol | medium | workspace-write |
-| hata | gpt-6.1-sol | high | workspace-write |
-| zor | gpt-6-astra | high | workspace-write |
+| kod, test | gpt-6.2-sol | medium | workspace-write |
+| hata | gpt-6.2-sol | high | workspace-write |
+| zor | gpt-6.2-astra | high | workspace-write |
 | basit | gpt-6-luna | low | workspace-write |
-| resim | gpt-6.1-sol | low | workspace-write |
-| incele | gpt-6.1-sol | medium | (review) |
+| resim | gpt-6.2-sol | low | workspace-write |
+| incele | gpt-6.2-sol | medium | (review) |
 | commit, pr | gpt-6-luna | low | read-only |
 | ozet | gemini-3.8-flash-low (yedek: luna) | – | salt okuma |
 | tara, gor | gemini-3.8-flash-medium (agy) | – | salt okuma |

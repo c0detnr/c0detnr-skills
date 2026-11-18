@@ -5,14 +5,14 @@
 # Etkin değerleri görmek için: cx config
 
 # --- Codex modları (codex modelleri; effort: low | medium | high)
-kod    = gpt-6.1-sol  medium
-test   = gpt-6.1-sol  medium
-hata   = gpt-6.1-sol  high
-zor    = gpt-6-astra  high
+kod    = gpt-6.2-sol  medium
+test   = gpt-6.2-sol  medium
+hata   = gpt-6.2-sol  high
+zor    = gpt-6.2-astra  high
 basit  = gpt-6-luna   low
-devam  = gpt-6.1-sol  medium
-resim  = gpt-6.1-sol  low
-incele = gpt-6.1-sol  medium
+devam  = gpt-6.2-sol  medium
+resim  = gpt-6.2-sol  low
+incele = gpt-6.2-sol  medium
 commit = gpt-6-luna   low
 pr     = gpt-6-luna   low
 

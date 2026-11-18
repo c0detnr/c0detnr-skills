@@ -25,9 +25,9 @@ USAGE="$STATE/usage.csv"
 
 # --- ayarlar: varsayılan < ~/.c0detnr/config < <proje>/.c0detnr/config < ortam değişkenleri
 declare -A CFG=(
-  [kod]="gpt-6.1-sol medium"   [test]="gpt-6.1-sol medium"  [hata]="gpt-6.1-sol high"
-  [zor]="gpt-6-astra high"     [basit]="gpt-6-luna low"     [devam]="gpt-6.1-sol medium"
-  [resim]="gpt-6.1-sol low"    [incele]="gpt-6.1-sol medium"
+  [kod]="gpt-6.2-sol medium"   [test]="gpt-6.2-sol medium"  [hata]="gpt-6.2-sol high"
+  [zor]="gpt-6.2-astra high"     [basit]="gpt-6-luna low"     [devam]="gpt-6.2-sol medium"
+  [resim]="gpt-6.2-sol low"    [incele]="gpt-6.2-sol medium"
   [commit]="gpt-6-luna low"    [pr]="gpt-6-luna low"
   [ozet]="gemini-3.8-flash-low"   [tara]="gemini-3.8-flash-medium"
   [gor]="gemini-3.8-flash-medium" [ikinci]="claude-sonnet-4-6"
