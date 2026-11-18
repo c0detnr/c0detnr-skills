@@ -46,6 +46,7 @@ G
 - Düzeltme gerekirse yeni görev açma, `cx devam <id>` kullan.
 - `log=` dizinini yalnızca hata olursa ve hedefli oku (`tail`, `grep`), asla tamamını okuma.
 - 2 dakikadan uzun sürecek görevleri `run_in_background` ile çalıştır. Aynı dosyalara dokunan iki görevi paralel çalıştırma.
+- `cx` proje başına varsayılan olarak 3 alt ajan çalıştırır. Sınır dolduğunda yeni işler bekler. Etkin sınır `cx config` çıktısındaki `max_agents` satırında görünür.
 - Resimleri (üretilen ya da kullanıcının verdiği) kendin açma; gerekiyorsa `cx gor`.
 - Codex başarısız olursa `cx` işi otomatik olarak Gemini'ye bir kez daha dener; çıktıda "(gemini yedeği)" görürsen sonucu daha dikkatli doğrula.
 - `sorular` alanı doluysa: kendin karar verebiliyorsan `cx devam` ile ilet, veremiyorsan kullanıcıya sor.

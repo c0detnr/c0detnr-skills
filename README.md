@@ -39,6 +39,7 @@ yedek_acik = 0                   # codex başarısız olunca gemini'ye geçme
 - Sıra: varsayılan < `~/.c0detnr/config` < `<proje>/.c0detnr/config` < ortam değişkenleri (`CX_MODEL`, `CX_EFFORT`, `CX_AGY_MODEL`).
 - Bir satırda effort yazılmazsa `medium` kullanılır.
 - `cx config`: etkin değerleri ve okunan dosyaları gösterir; hiç config yoksa projede oluşturur.
+- `max_agents = 3` varsayılan olarak bir projede aynı anda en fazla 3 Codex veya Antigravity işi çalıştırır. Sınır dolunca yeni işler yer açılmasını bekler. Değiştirmek için proje veya ortak ayar dosyasına pozitif bir tam sayı yazın.
 - Loglar ve token kaydı ortak yerde tutulur: `~/.c0detnr/runs/`, `~/.c0detnr/usage.csv` (`cx durum`).
 - kod/test/hata/zor/basit/devam/resim/incele/commit/pr modları Codex'e, ozet/tara/gor/ikinci/yedek agy'ye gider; her moda o aracın tanıdığı bir model yaz.
 

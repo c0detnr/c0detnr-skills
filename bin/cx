@@ -32,7 +32,7 @@ declare -A CFG=(
   [ozet]="gemini-3.8-flash-low"   [tara]="gemini-3.8-flash-medium"
   [gor]="gemini-3.8-flash-medium" [ikinci]="claude-sonnet-4-6"
   [yedek]="gemini-3.8-flash-high" [ozet_yedek]="gpt-6-luna low" [yedek_acik]="1"
-  [timeout]="1800" [max_out]="1500"
+  [timeout]="1800" [max_out]="1500" [max_agents]="3"
 )
 CFG_FILES=()
 load_cfg() {  # anahtar = değer satırları; kod çalıştırmaz (source edilmez)
@@ -96,7 +96,19 @@ die() { echo "cx: $*" >&2; exit 2; }
 clip() { "$PY" -I -X utf8 -c 'import sys;s=sys.stdin.read();n=int(sys.argv[1]);print(s if len(s)<=n else s[:n]+"\n…(kırpıldı)")' "$1"; }
 in_git() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 
+run_agent() {
+  # Git Bash'te model argümanlarını Windows komut satırından geçirmeden koru.
+  { printf 'exec '; printf '%q ' timeout "$TIMEOUT" "$@"; printf '\n'; } > "$RUN/agent-command" || return
+  "$PY" -I -X utf8 "$(winpath "$KIT_DIR/share/agent-slot.py")" \
+    "$(winpath "$STATE/slots")" "$(winpath "$PROJ_ROOT")" "${CFG[max_agents]}" \
+    "$(winpath "$BASH")" "$(winpath "$RUN/agent-command")"
+}
+
 MODE="${1:-}"; [ -z "$MODE" ] && { usage; exit 2; }; shift || true
+case "$MODE" in
+  config|durum|-h|--help|yardim) ;;
+  *) [[ "${CFG[max_agents]}" =~ ^[1-9][0-9]*$ ]] || die "max_agents pozitif bir tam sayı olmalı" ;;
+esac
 
 RUN="$STATE/runs/$(date +%Y%m%d-%H%M%S)-$MODE-$$"
 mkdir -p "$RUN"; trap 'rmdir "$RUN" 2>/dev/null' EXIT   # boş kalırsa sil
@@ -113,7 +125,7 @@ run_codex() {
   [ "$eph" = 1 ] && args+=(--ephemeral)
   args+=("$@" -)
   local t0=$SECONDS
-  timeout "$TIMEOUT" codex "${args[@]}" < "$RUN/prompt.md" > "$RUN/events.jsonl" 2> "$RUN/stderr.txt"
+  run_agent codex "${args[@]}" < "$RUN/prompt.md" > "$RUN/events.jsonl" 2> "$RUN/stderr.txt"
   RC=$?; DUR=$((SECONDS - t0)); MODEL_USED="$model"; EFFORT_USED="$effort"
   log_usage
 }
@@ -143,7 +155,7 @@ P
 run_agy() {
   local model="${CX_AGY_MODEL:-$1}" mode="$2" t0=$SECONDS
   echo "Ara adımları, düşüncelerini ve ne yapacağını anlatma; yalnızca istenen son cevabı yaz." >> "$RUN/prompt.md"
-  timeout "$TIMEOUT" agy -p "$(cat "$RUN/prompt.md")" --model "$model" --mode "$mode" --sandbox \
+  run_agent agy -p "$(cat "$RUN/prompt.md")" --model "$model" --mode "$mode" --sandbox \
     --dangerously-skip-permissions --output-format json --print-timeout "${TIMEOUT}s" \
     > "$RUN/agy.json" 2> "$RUN/stderr.txt"
   RC=$?; DUR=$((SECONDS - t0)); MODEL_USED="$model"; EFFORT_USED="$mode"
@@ -285,7 +297,7 @@ case "$MODE" in
   incele)
     in_git || die "git deposu değil"
     cfgm incele; m="${CX_MODEL:-$MDL}"; e="${CX_EFFORT:-$EFF}"; t0=$SECONDS
-    timeout "$TIMEOUT" codex exec review --uncommitted -m "$m" -c "model_reasoning_effort=\"$e\"" "$@" \
+    run_agent codex exec review --uncommitted -m "$m" -c "model_reasoning_effort=\"$e\"" "$@" \
       > "$RUN/last.txt" 2> "$RUN/stderr.txt"
     RC=$?; DUR=$((SECONDS - t0)); MODEL_USED=$m; EFFORT_USED=$e; : > "$RUN/events.jsonl"; log_usage
     [ "$RC" -ne 0 ] && fail_report
@@ -323,7 +335,7 @@ case "$MODE" in
     echo "  $(winpath "$CX_HOME/config") $([ -f "$CX_HOME/config" ] || echo '(yok)')"
     echo "  $(winpath "$PROJ_ROOT/.c0detnr/config") $([ -f "$PROJ_ROOT/.c0detnr/config" ] || echo '(yok)')"
     echo "etkin değerler:"
-    for k in kod test hata zor basit devam resim incele commit pr ozet tara gor ikinci yedek ozet_yedek yedek_acik timeout max_out; do
+    for k in kod test hata zor basit devam resim incele commit pr ozet tara gor ikinci yedek ozet_yedek yedek_acik timeout max_out max_agents; do
       printf '  %-11s %s\n' "$k" "${CFG[$k]}"
     done
     echo "loglar: $(winpath "$STATE/runs")" ;;

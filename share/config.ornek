@@ -30,3 +30,4 @@ yedek_acik  = 1                       # 0 = yedek denemesi kapalı
 # --- Genel
 timeout = 1800    # saniye
 max_out = 1500    # Opus'a dönen en fazla karakter
+max_agents = 3    # proje başına aynı anda çalışabilen alt ajan sayısı
